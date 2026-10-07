@@ -1,13 +1,24 @@
-# LangChain ReAct Agent with Web Search
+# LangGraph ReAct Agent with FastMCP Web Search
 
-A Python-based ReAct (Reasoning + Acting) agent using LangChain that can search the web and answer questions.
+A Python ReAct agent built with **LangGraph**. Tools are served by a local **FastMCP** server over stdio, and loaded into the agent via **langchain-mcp-adapters**.
 
 ## Features
 
-- **ReAct Agent**: Reasoning and Acting framework for intelligent decision-making
-- **Web Search Tool**: Integrated web search capability
-- **Max Iterations**: Limited to 5 iterations to prevent infinite loops
+- **LangGraph ReAct Agent**: Tool-calling loop with `recursion_limit=5`
+- **FastMCP Server**: Exposes `web_search` as an MCP tool (`mcp_server.py`)
+- **Brave Search**: Current web results for the agent
 - **OpenAI Integration**: Uses GPT-4 for reasoning
+
+## Architecture
+
+```
+react_agent.py
+├── LangGraph create_react_agent
+│   ├── LLM (GPT-4)
+│   └── tools from MultiServerMCPClient
+└── spawns (stdio) → mcp_server.py
+                      └── FastMCP tool: web_search → Brave API
+```
 
 ## Setup
 
@@ -19,8 +30,11 @@ cd ai-agent
 
 ### 2. Create a virtual environment
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
 ```
 
 ### 3. Install dependencies
@@ -39,7 +53,12 @@ Edit `.env` and add your API keys:
 
 ## Usage
 
-### Basic Example
+### Run the agent from the command line
+```bash
+python react_agent.py
+```
+
+### Call from Python
 ```python
 from react_agent import run_agent
 
@@ -48,51 +67,35 @@ response = run_agent(query)
 print(response)
 ```
 
-### Run from Command Line
+### Run the MCP server alone (stdio)
+Usually the agent starts this for you. To launch manually:
 ```bash
-python react_agent.py
+python mcp_server.py
 ```
+Do not print application text to stdout while using stdio transport.
 
 ## How It Works
 
-1. **Observation**: The agent observes the input query
-2. **Thought**: It reasons about what needs to be done
-3. **Action**: It decides to use the WebSearch tool if needed
-4. **Result**: It processes the search results
-5. **Final Answer**: It generates a comprehensive response
-
-The agent stops after 5 iterations maximum or when it determines the answer is complete.
+1. The agent process connects to the FastMCP server over stdio.
+2. MCP tools (currently `web_search`) are loaded as LangChain tools.
+3. LangGraph's ReAct agent decides whether to call tools.
+4. Tool results are fed back into the model until a final answer is produced.
+5. The loop stops when the answer is complete or `recursion_limit=5` is hit.
 
 ## Configuration
 
-- **Max Iterations**: Change `max_iterations=5` in `react_agent.py` to adjust
-- **Model**: Currently uses GPT-4, modify in `ChatOpenAI(model="gpt-4")`
-- **Temperature**: Set to 0 for deterministic behavior, adjust as needed
+- **Recursion limit**: Change `MAX_RECURSION` in `react_agent.py`
+- **Model**: Change `model="gpt-4"` in `_build_llm()`
+- **Temperature**: Set to `0` for deterministic behavior
 
-## Architecture
+## Project layout
 
-```
-agent_executor
-├── ReAct Agent
-│   ├── LLM (GPT-4)
-│   ├── Tools
-│   │   └── WebSearch Tool
-│   └── Prompt (from LangChain Hub)
-└── Max Iterations: 5
-```
-
-## Error Handling
-
-- Gracefully handles parsing errors
-- Returns error messages if API calls fail
-- Catches timeout exceptions in web search
-
-## Future Enhancements
-
-- Add more tools (Calculator, Wikipedia, Custom APIs)
-- Implement memory/conversation history
-- Add response caching
-- Support for different LLM models
+| File | Role |
+|------|------|
+| `react_agent.py` | LangGraph agent + MCP client |
+| `mcp_server.py` | FastMCP stdio server (`web_search`) |
+| `.env` | API keys (not committed) |
+| `requirements.txt` | Python dependencies |
 
 ## License
 

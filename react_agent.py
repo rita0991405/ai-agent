@@ -1,116 +1,91 @@
 """
-LangChain ReAct Agent with Web Search Tool
+LangGraph ReAct Agent that calls tools via a FastMCP stdio server.
 """
-import os
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain.tools import Tool
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain import hub
-import requests
-from typing import Optional
+from __future__ import annotations
 
-# Load environment variables
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+
 load_dotenv()
 
-# Initialize the LLM
-llm = ChatOpenAI(
-    model="gpt-4",
-    temperature=0,
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+PROJECT_ROOT = Path(__file__).resolve().parent
+MCP_SERVER_PATH = PROJECT_ROOT / "mcp_server.py"
+PYTHON_EXECUTABLE = sys.executable
 
-# Define Web Search Tool
-def web_search(query: str) -> str:
-    """
-    Search the web using a simple search API.
-    Args:
-        query: The search query string
-    Returns:
-        Search results as a string
-    """
-    try:
-        # Using DuckDuckGo API for search (no API key required)
-        url = "https://api.search.brave.com/res/v1/web/search"
-        headers = {
-            "Accept": "application/json",
-            "X-Subscription-Token": os.getenv("BRAVE_SEARCH_API_KEY", "")
-        }
-        params = {
-            "q": query,
-            "count": 5
-        }
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-        
-        results = response.json()
-        
-        # Format results
-        formatted_results = []
-        if "web" in results:
-            for item in results["web"][:5]:
-                formatted_results.append(
-                    f"Title: {item.get('title', 'N/A')}\n"
-                    f"URL: {item.get('url', 'N/A')}\n"
-                    f"Description: {item.get('description', 'N/A')}\n"
-                )
-        
-        return "\n---\n".join(formatted_results) if formatted_results else "No results found"
-    
-    except Exception as e:
-        return f"Error performing web search: {str(e)}"
+MAX_RECURSION = 5
 
 
-# Create tools list
-tools = [
-    Tool(
-        name="WebSearch",
-        func=web_search,
-        description="Useful for searching the internet for current information, news, and facts. Input should be a search query string."
+def _build_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model="gpt-4",
+        temperature=0,
+        api_key=os.getenv("OPENAI_API_KEY"),
     )
-]
-
-# Get the ReAct prompt from LangChain Hub
-prompt = hub.pull("hwchase17/react")
-
-# Create the ReAct agent
-agent = create_react_agent(
-    llm=llm,
-    tools=tools,
-    prompt=prompt,
-    stop_sequence=["\nObservation:"]
-)
-
-# Create the agent executor with max_iterations=5
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    max_iterations=5,
-    handle_parsing_errors=True
-)
 
 
-def run_agent(query: str) -> str:
+def _build_mcp_client() -> MultiServerMCPClient:
+    return MultiServerMCPClient(
+        {
+            "web-search": {
+                "transport": "stdio",
+                "command": PYTHON_EXECUTABLE,
+                "args": [str(MCP_SERVER_PATH)],
+                "cwd": str(PROJECT_ROOT),
+                "env": {
+                    **os.environ,
+                    "BRAVE_SEARCH_API_KEY": os.getenv("BRAVE_SEARCH_API_KEY", ""),
+                },
+            }
+        }
+    )
+
+
+async def run_agent_async(query: str) -> str:
     """
-    Run the ReAct agent with a given query.
-    
+    Run the LangGraph ReAct agent with MCP tools.
+
     Args:
-        query: The user query to process
-        
+        query: The user query to process.
+
     Returns:
-        The agent's final response
+        The agent's final response text.
     """
     try:
-        result = agent_executor.invoke({"input": query})
-        return result.get("output", "No response generated")
+        client = _build_mcp_client()
+        tools = await client.get_tools()
+        agent = create_react_agent(_build_llm(), tools)
+
+        result = await agent.ainvoke(
+            {"messages": [("user", query)]},
+            config={"recursion_limit": MAX_RECURSION},
+        )
+
+        messages = result.get("messages", [])
+        if not messages:
+            return "No response generated"
+
+        last = messages[-1]
+        content = getattr(last, "content", None)
+        if content is None and isinstance(last, dict):
+            content = last.get("content")
+        return content if content else "No response generated"
     except Exception as e:
         return f"Error executing agent: {str(e)}"
 
 
+def run_agent(query: str) -> str:
+    """Synchronous wrapper around the async LangGraph agent."""
+    return asyncio.run(run_agent_async(query))
+
+
 if __name__ == "__main__":
-    # Example usage
     query = "What are the latest developments in AI?"
     print(f"Query: {query}\n")
     response = run_agent(query)
